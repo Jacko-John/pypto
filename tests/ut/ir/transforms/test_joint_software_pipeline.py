@@ -123,16 +123,37 @@ def test_consumer_first_group_preserves_endpoint_matching():
 @pytest.mark.parametrize(
     ("old", "new"),
     [
-        ("peer_func='consumer'", "peer_func='unknown'"),
+        ("peer_func", "unknown"),
         ("size=3072", "size=1024"),
         ('"software_pipeline_family": 1', '"unproven_loop": 1'),
         ("slot_num=3", "slot_num=1"),
     ],
 )
 def test_unproven_pair_retains_existing_path(old, new):
-    original = ir.python_print(Before)
-    assert old in original
-    before = parse(original.replace(old, new), filename="<joint-fallback>")
+    if old == "peer_func":
+        # Change the endpoint itself without depending on printed keyword layout.
+        matched = []
+
+        class ChangePeer(ir.IRMutator):
+            def visit_call(self, op):
+                call = super().visit_call(op)
+                if (
+                    not isinstance(call, ir.Call)
+                    or call.op.name != ir.get_op("system.import_peer_buffer").name
+                ):
+                    return call
+                kwargs = dict(call.kwargs)
+                assert kwargs["peer_func"] == "consumer"
+                kwargs["peer_func"] = new
+                matched.append(call)
+                return ir.Call(call.op, call.args, kwargs, call.attrs, call.type, call.span)
+
+        before = ChangePeer().visit_program(Before)
+        assert len(matched) == 1
+    else:
+        original = ir.python_print(Before)
+        assert old in original
+        before = parse(original.replace(old, new), filename="<joint-fallback>")
     ir.assert_structural_equal(_run(before), before)
 
 
