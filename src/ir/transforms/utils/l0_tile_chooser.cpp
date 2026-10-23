@@ -41,9 +41,7 @@ constexpr int64_t CeilDiv(int64_t a, int64_t b) { return (a + b - 1) / b; }
 
 // A zero `reduction_iterations` means "unknown": price one source block as a
 // lower bound. Otherwise the enclosing source pipeline repeats the reduction.
-int64_t ReductionRepetitions(const L0TileConfig& cfg) {
-  return std::max<int64_t>(1, cfg.reduction_iterations);
-}
+int ReductionRepetitions(const L0TileConfig& cfg) { return std::max(1, cfg.reduction_iterations); }
 
 // Physical extent after the caller's boxed-layout padding. Reuse the shared
 // overflow-safe L0C alignment helper rather than duplicating unsigned
