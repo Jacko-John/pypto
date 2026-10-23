@@ -399,6 +399,7 @@ set(PYPTO_SOURCES
     src/backend/common/pto_ops_distributed.cpp
     src/backend/common/pto_ops_prefetch.cpp
     src/backend/common/soc.cpp
+    src/sync/resource_catalog.cpp
 )
 
 # Include Python bindings
