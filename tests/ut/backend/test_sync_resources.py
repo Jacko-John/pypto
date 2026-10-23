@@ -19,7 +19,8 @@ from pypto.pypto_core import backend, ir, sync
 @pytest.fixture(params=["a2a3", "a5"])
 def catalog(request: pytest.FixtureRequest) -> sync.ResourceCatalog:
     """Borrow both target catalogs without choosing a process-global backend."""
-    selected = sync.find_resource_catalog(request.param)
+    # Pytest 7 adds param only to parametrized requests, outside FixtureRequest's type contract.
+    selected = sync.find_resource_catalog(cast(str, getattr(request, "param")))
     assert selected is not None
     return selected
 
