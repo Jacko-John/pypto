@@ -556,7 +556,10 @@ BatchMatmulResult LowerBatchMatmul(const AssignStmtPtr& assign, const CallPtr& c
   // tile.store branch in rewrite.cpp instead.
   const AccPackingPlan* acc_plan = ctx.AccPackingForVar(assign->var_);
 
-  // Detect direct-store fusion opportunity.
+  // Detect direct-store fusion opportunity. Fusion folds the consumer into
+  // this statement and drops the intermediate, so it is only valid when the
+  // result is the sole use and carries no explicitly bound allocation: a
+  // pinned MemRef must survive as its own definition for InitMemRef.
   auto direct_store =
       acc_plan != nullptr || GetTypeMemRef(assign->var_->GetType()) || ctx.UseCount(assign->var_.get()) != 1
           ? DirectStoreInfo{}
@@ -592,6 +595,9 @@ BatchMatmulResult LowerBatchMatmul(const AssignStmtPtr& assign, const CallPtr& c
     auto matmul_type = As<TileType>(matmul->GetType());
     bool needs_cast = matmul_type && matmul_type->dtype_ != orig_result_type->dtype_;
     auto bound_type = As<TileType>(assign->var_->GetType());
+    // An explicitly bound result must keep its declared memory space. The fast
+    // path returns the matmul's own Acc tile, so stage through Vec instead when
+    // the binding names a different space.
     const bool needs_staging = bound_type && bound_type->memref_ && bound_type->memory_space_ &&
                                matmul_type && bound_type->memory_space_ != matmul_type->memory_space_;
     if (!needs_cast && !needs_staging) {

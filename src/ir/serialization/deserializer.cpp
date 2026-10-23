@@ -57,6 +57,16 @@ namespace {
 
 using TypeFields = std::unordered_map<std::string, msgpack::object>;
 
+// Reuse enum conversion while preserving TileView's field-specific ValueError
+// contract; generic enum-valued kwargs deliberately report TypeError instead.
+TileLayout ReadTileViewLayout(const std::string& value, const char* field) {
+  try {
+    return StringToTileLayout(value);
+  } catch (const TypeError&) {
+    throw ValueError("Unknown TileLayout for " + std::string(field) + ": " + value);
+  }
+}
+
 TypeFields ReadRequiredTypeFields(const msgpack::object& obj, const std::string& type_kind,
                                   std::initializer_list<const char*> required_fields) {
   TypeFields fields;
@@ -320,43 +330,19 @@ class IRDeserializer::Impl : public detail::DeserializerContext {
       } else if (key == "blayout") {
         std::string blayout_str;
         p->val.convert(blayout_str);
-        if (blayout_str == "none_box") {
-          tile_view.blayout = TileLayout::none_box;
-        } else if (blayout_str == "row_major") {
-          tile_view.blayout = TileLayout::row_major;
-        } else if (blayout_str == "col_major") {
-          tile_view.blayout = TileLayout::col_major;
-        } else {
-          CHECK(false) << "Unknown TileLayout for blayout: " << blayout_str;
-        }
+        tile_view.blayout = ReadTileViewLayout(blayout_str, "blayout");
       } else if (key == "slayout") {
         std::string slayout_str;
         p->val.convert(slayout_str);
-        if (slayout_str == "none_box") {
-          tile_view.slayout = TileLayout::none_box;
-        } else if (slayout_str == "row_major") {
-          tile_view.slayout = TileLayout::row_major;
-        } else if (slayout_str == "col_major") {
-          tile_view.slayout = TileLayout::col_major;
-        } else {
-          CHECK(false) << "Unknown TileLayout for slayout: " << slayout_str;
-        }
+        tile_view.slayout = ReadTileViewLayout(slayout_str, "slayout");
       } else if (key == "fractal") {
         p->val.convert(tile_view.fractal);
       } else if (key == "pad") {
         std::string pad_str;
         p->val.convert(pad_str);
-        if (pad_str == "null") {
-          tile_view.pad = PadValue::null;
-        } else if (pad_str == "zero") {
-          tile_view.pad = PadValue::zero;
-        } else if (pad_str == "max") {
-          tile_view.pad = PadValue::max;
-        } else if (pad_str == "min") {
-          tile_view.pad = PadValue::min;
-        } else {
-          CHECK(false) << "Unknown PadValue: " << pad_str;
-        }
+        auto pad = TryStringToPadValue(pad_str);
+        CHECK(pad.has_value()) << "Unknown PadValue: " << pad_str;
+        tile_view.pad = *pad;
       } else if (key == "compact") {
         std::string compact_str;
         p->val.convert(compact_str);
@@ -414,17 +400,9 @@ class IRDeserializer::Impl : public detail::DeserializerContext {
       } else if (key == "pad") {
         std::string pad_str;
         p->val.convert(pad_str);
-        if (pad_str == "null") {
-          tensor_view.pad = PadValue::null;
-        } else if (pad_str == "zero") {
-          tensor_view.pad = PadValue::zero;
-        } else if (pad_str == "max") {
-          tensor_view.pad = PadValue::max;
-        } else if (pad_str == "min") {
-          tensor_view.pad = PadValue::min;
-        } else {
-          CHECK(false) << "Unknown PadValue: " << pad_str;
-        }
+        auto pad = TryStringToPadValue(pad_str);
+        CHECK(pad.has_value()) << "Unknown PadValue: " << pad_str;
+        tensor_view.pad = *pad;
       }
       // Older serialized IR may omit "valid_shape" or "pad"; defaults stay
       // fully valid and PadValue::null, respectively.

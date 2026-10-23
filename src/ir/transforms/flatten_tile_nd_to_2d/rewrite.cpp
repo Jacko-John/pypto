@@ -491,8 +491,7 @@ std::vector<StmtPtr> TransformBody(const std::vector<StmtPtr>& stmts, FlattenCon
       if (it == stmt_def_map.end()) return;
       auto c = As<Call>(it->second->value_);
       if (!c || !c->op_ || c->args_.empty()) return;
-      const std::string& n = c->op_->name_;
-      if (n == "tile.transpose_view" || n == "tile.reshape") {
+      if (IsOp(c, "tile.transpose_view") || IsOp(c, "tile.reshape")) {
         if (auto in = As<Var>(c->args_[0])) MarkChain(in.get(), fits);
       }
     };
@@ -500,9 +499,8 @@ std::vector<StmtPtr> TransformBody(const std::vector<StmtPtr>& stmts, FlattenCon
       auto a = As<AssignStmt>(s);
       auto c = a ? As<Call>(a->value_) : nullptr;
       if (!c || !c->op_) continue;
-      const std::string& n = c->op_->name_;
-      const bool is_bmm = (n == "tile.batch_matmul");
-      const bool is_bmm_acc = (n == "tile.batch_matmul_acc");
+      const bool is_bmm = IsOp(c, "tile.batch_matmul");
+      const bool is_bmm_acc = IsOp(c, "tile.batch_matmul_acc");
       if (!is_bmm && !is_bmm_acc) continue;
       const size_t lhs_i = is_bmm ? 0 : 1;
       const size_t rhs_i = is_bmm ? 1 : 2;

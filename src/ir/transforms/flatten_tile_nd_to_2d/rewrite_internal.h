@@ -95,8 +95,11 @@ struct FlattenContext {
   /// Shared, immutable column-packing decision (see `BuildAccPackingMap`). Held
   /// by pointer so the per-block context copies stay O(1).
   AccPackingMapPtr acc_packing;
-  /// Whole-function USE counts, including attrs and type expressions. Shared
-  /// across nested blocks so elision never scans the function per candidate.
+  /// Whole-function USE counts for tile elision. Includes attrs and type
+  /// expression fields (shape, valid_shape, slot index). Allocation byte
+  /// offsets are deliberately excluded: every query below is about a tile Var,
+  /// and byte offsets only name index scalars. Shared across nested blocks so
+  /// elision never scans the function per candidate.
   std::shared_ptr<const std::unordered_map<const Var*, size_t>> use_counts;
 
   [[nodiscard]] size_t UseCount(const Var* var) const {

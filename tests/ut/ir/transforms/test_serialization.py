@@ -973,6 +973,24 @@ class TestEdgeCases:
 class TestRobustness:
     """Tests for error handling and robustness."""
 
+    @pytest.mark.parametrize("field", ["blayout", "slayout"])
+    def test_deserialize_invalid_tile_layout_preserves_field_error(self, field):
+        """Shared enum conversion must preserve each view field's ValueError contract."""
+        tile_type = ir.TileType(
+            [16, 32],
+            DataType.FP32,
+            tile_view=ir.TileView(blayout=ir.TileLayout.row_major, slayout=ir.TileLayout.row_major),
+        )
+        payload = ir.serialize(ir.Var("tile", tile_type, ir.Span.unknown()))
+
+        # Replace one same-length MessagePack string, keeping the other layout valid.
+        layout_field = field.encode() + b"\xa9row_major"
+        assert payload.count(layout_field) == 1
+        invalid_payload = payload.replace(layout_field, field.encode() + b"\xa9bogus_123")
+
+        with pytest.raises(ValueError, match=f"Unknown TileLayout for {field}: bogus_123"):
+            ir.deserialize(invalid_payload)
+
     def test_deserialize_invalid_data(self):
         """Test that deserializing invalid data raises an error."""
         invalid_data = b"invalid msgpack data"

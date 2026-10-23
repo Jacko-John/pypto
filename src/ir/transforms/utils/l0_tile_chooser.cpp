@@ -39,6 +39,12 @@ constexpr int64_t AlignUp(int64_t x, int64_t a) { return ((x + a - 1) / a) * a; 
 
 constexpr int64_t CeilDiv(int64_t a, int64_t b) { return (a + b - 1) / b; }
 
+// A zero `reduction_iterations` means "unknown": price one source block as a
+// lower bound. Otherwise the enclosing source pipeline repeats the reduction.
+int64_t ReductionRepetitions(const L0TileConfig& cfg) {
+  return std::max<int64_t>(1, cfg.reduction_iterations);
+}
+
 // Physical extent after the caller's boxed-layout padding. Reuse the shared
 // overflow-safe L0C alignment helper rather than duplicating unsigned
 // round-up arithmetic here; n=1 makes its result exactly AlignUp(extent,
@@ -185,14 +191,14 @@ int64_t EstimateTraffic(int m, int n, int k, const L0TileConfig& cfg, const Regi
   }
   const int64_t gamma_c = cfg.c_read ? 2 : 1;
   const int64_t c_traffic = gamma_c * static_cast<int64_t>(cfg.bytes_c) * M * N;
-  const int64_t repetitions = std::max(1, cfg.reduction_iterations);
+  const int64_t repetitions = ReductionRepetitions(cfg);
   CHECK(a_traffic + b_traffic <= (std::numeric_limits<int64_t>::max() - c_traffic) / repetitions)
       << "ChooseL0Tile: repeated reduction traffic exceeds int64 range";
   return (a_traffic + b_traffic) * repetitions + c_traffic;
 }
 
 int64_t RepeatedReductionWork(int64_t work, const L0TileConfig& cfg) {
-  const int64_t repetitions = std::max(1, cfg.reduction_iterations);
+  const int64_t repetitions = ReductionRepetitions(cfg);
   CHECK(work >= 0 && work <= std::numeric_limits<int64_t>::max() / repetitions)
       << "ChooseL0Tile: repeated reduction work exceeds int64 range";
   return work * repetitions;
@@ -371,7 +377,7 @@ double DrainCycles(int m, int n, const L0TileConfig& cfg) {
 // exposed tile is smaller, so this is a slight -- and safe (conservative) --
 // over-correction. Tail-accurate pricing is a follow-up (see docs).
 int64_t WallCycles(int m, int n, int k, const L0TileConfig& cfg, const Regime& r) {
-  const double compute = std::max(LoadCycles(m, n, k, cfg, r) * std::max(1, cfg.reduction_iterations),
+  const double compute = std::max(LoadCycles(m, n, k, cfg, r) * ReductionRepetitions(cfg),
                                   static_cast<double>(MadCycles(m, n, k, cfg)));
   const double drain = DrainCycles(m, n, cfg);
   double wall;
@@ -442,7 +448,7 @@ std::optional<Candidate> MakeCandidate(int m, int n, int k, const L0TileConfig& 
   c.traffic = EstimateTraffic(m, n, k, cfg, regime);
   c.cost_cycles = WallCycles(m, n, k, cfg, regime);
   c.padded_compute = PaddedComputeVolume(m, n, k, cfg);
-  c.load_cycles = LoadCycles(m, n, k, cfg, regime) * std::max(1, cfg.reduction_iterations);
+  c.load_cycles = LoadCycles(m, n, k, cfg, regime) * ReductionRepetitions(cfg);
   c.regime = regime;
   return c;
 }

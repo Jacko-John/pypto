@@ -154,10 +154,7 @@ def _validate_device_tensor(arg: DeviceTensor, info: _ParamInfo) -> None:
                 )
     _validate_fp4_carrier_shape(arg.shape, info)
     expected_dtype = _to_torch_dtype(info.dtype)
-    is_packed_byte_carrier = (
-        info.dtype in (DataType.FP4E2M1X2, DataType.FP4E1M2X2) and arg.dtype == torch.uint8
-    )
-    if expected_dtype is not None and arg.dtype != expected_dtype and not is_packed_byte_carrier:
+    if expected_dtype is not None and not _matches_torch_dtype(info.dtype, arg.dtype):
         raise TypeError(
             f"Parameter {info.name!r} expects dtype {expected_dtype}; got DeviceTensor dtype {arg.dtype}"
         )
@@ -190,10 +187,7 @@ def _validate_stacked_tensor(arg: StackedDeviceTensor, info: _ParamInfo) -> None
                 )
     _validate_fp4_carrier_shape(arg.full_shape, info)
     expected_dtype = _to_torch_dtype(info.dtype)
-    is_packed_byte_carrier = (
-        info.dtype in (DataType.FP4E2M1X2, DataType.FP4E1M2X2) and arg.dtype == torch.uint8
-    )
-    if expected_dtype is not None and arg.dtype != expected_dtype and not is_packed_byte_carrier:
+    if expected_dtype is not None and not _matches_torch_dtype(info.dtype, arg.dtype):
         raise TypeError(
             f"Parameter {info.name!r} expects dtype {expected_dtype}; "
             f"got StackedDeviceTensor dtype {arg.dtype}"

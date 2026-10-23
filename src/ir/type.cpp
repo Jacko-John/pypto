@@ -269,6 +269,14 @@ CompactMode StringToCompactMode(const std::string& str) {
   throw TypeError("Unknown CompactMode string: " + str);
 }
 
+std::optional<PadValue> TryStringToPadValue(const std::string& str) {
+  if (str == "null") return PadValue::null;
+  if (str == "zero") return PadValue::zero;
+  if (str == "max") return PadValue::max;
+  if (str == "min") return PadValue::min;
+  return std::nullopt;
+}
+
 BufferType::BufferType(std::vector<int64_t> shape, DataType dtype, MemorySpace memory_space,
                        std::vector<int64_t> valid_shape, TileLayout blayout, TileLayout slayout,
                        uint64_t fractal, PadValue pad, CompactMode compact)

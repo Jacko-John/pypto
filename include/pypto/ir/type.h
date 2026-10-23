@@ -357,6 +357,14 @@ std::string CompactModeToString(CompactMode mode);
 CompactMode StringToCompactMode(const std::string& str);
 
 /**
+ * @brief Convert a serialized PadValue spelling to its enum value.
+ *
+ * Returns nullopt for an unknown spelling so each deserializer can keep its
+ * own error message and exception class.
+ */
+std::optional<PadValue> TryStringToPadValue(const std::string& str);
+
+/**
  * @brief Physical descriptor of an explicit on-chip buffer reference
  *
  * A BufferType describes mutable storage referenced by an immutable SSA value.

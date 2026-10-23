@@ -212,6 +212,13 @@ static std::vector<std::pair<std::string, std::any>> DeserializeKwargs(const msg
           }
         }
       }
+      // The enum/layout-valued kwargs below all carry their payload in the
+      // "value" field; keep that shape check in one place.
+      auto require_value = [&](const char* expected_type) {
+        if (value_str.empty()) {
+          throw TypeError("Missing 'value' field for " + std::string(expected_type) + " kwarg: " + key);
+        }
+      };
       if (type_name == "ArgDirection") {
         if (!has_value_obj || value_obj_inner.type != msgpack::type::POSITIVE_INTEGER) {
           throw TypeError("ArgDirection kwarg '" + key + "' must have integer value");
@@ -238,35 +245,21 @@ static std::vector<std::pair<std::string, std::any>> DeserializeKwargs(const msg
         }
         kwargs.emplace_back(key, std::move(dirs));
       } else if (type_name == "TensorLayout") {
-        if (value_str.empty()) {
-          throw TypeError("Missing 'value' field for TensorLayout kwarg: " + key);
-        }
+        require_value("TensorLayout");
         kwargs.emplace_back(key, StringToTensorLayout(value_str));
       } else if (type_name == "TileLayout") {
-        if (value_str.empty()) {
-          throw TypeError("Missing 'value' field for TileLayout kwarg: " + key);
-        }
+        require_value("TileLayout");
         kwargs.emplace_back(key, StringToTileLayout(value_str));
       } else if (type_name == "MemorySpace") {
-        if (value_str.empty()) {
-          throw TypeError("Missing 'value' field for MemorySpace kwarg: " + key);
-        }
+        require_value("MemorySpace");
         kwargs.emplace_back(key, StringToMemorySpace(value_str));
       } else if (type_name == "PadValue") {
-        if (value_str.empty()) {
-          throw TypeError("Missing 'value' field for PadValue kwarg: " + key);
-        }
-        if (value_str == "null") {
-          kwargs.emplace_back(key, PadValue::null);
-        } else if (value_str == "zero") {
-          kwargs.emplace_back(key, PadValue::zero);
-        } else if (value_str == "max") {
-          kwargs.emplace_back(key, PadValue::max);
-        } else if (value_str == "min") {
-          kwargs.emplace_back(key, PadValue::min);
-        } else {
+        require_value("PadValue");
+        auto pad = TryStringToPadValue(value_str);
+        if (!pad.has_value()) {
           throw TypeError("Unknown PadValue: " + value_str + " for kwarg: " + key);
         }
+        kwargs.emplace_back(key, *pad);
       } else if (type_name == "Var") {
         // Reserved Var-valued attr (kAttrTaskIdVar). Resolved through the node
         // table so it round-trips by identity. A missing 'value' field is a
