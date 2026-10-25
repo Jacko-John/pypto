@@ -12,7 +12,7 @@
 from typing import ClassVar, overload
 
 from pypto import ir
-from pypto.pypto_core.sync import ResourceCatalog
+from pypto.pypto_core.sync import IsaMacroResources, ResourceCatalog
 
 class BackendType:
     """Backend type for passes and codegen."""
@@ -180,6 +180,15 @@ class Backend:
     """Abstract backend base class."""
 
     def get_type_name(self) -> str: ...
+    def find_isa_macro_resources(self, name: str) -> IsaMacroResources | None:
+        """Return symbolic signal claims, or None for an unregistered macro.
+
+        Absence does not certify an unknown external implementation as signal-free.
+        """
+        ...
+    def get_isa_macro_names(self) -> list[str]:
+        """Sorted qualified macro names with registered signal occupancy for this target."""
+        ...
     def plan_op_scratch(
         self,
         op_name: str,
