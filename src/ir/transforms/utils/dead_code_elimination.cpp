@@ -68,11 +68,11 @@ bool IsSideEffectOp(const StmtPtr& stmt) {
   // `IsOp` is the right helper for testing a single operator, not a twelve-way
   // membership test on a hot path.
   //
-  // The list is hand-maintained and is not derived from operator metadata,
-  // because no registry property answers "is a call to this operator
-  // removable"; the write predicates (`WritesAnyArg` and friends) answer
-  // whether an operator writes *through an argument*, which is a different
-  // question and unsound as a stand-in.
+  // The list remains hand-maintained for non-register side effects: writing
+  // through an argument does not generally imply a non-removable operation.
+  // The narrow exception below is a registered RegOp with WritesAnyArg(): a
+  // register store mutates Tile storage through argument 0, which ordinary SSA
+  // uses do not capture, so it must survive even when its alias result is unused.
   static const std::unordered_set<std::string> side_effect_ops = [] {
     const auto& registry = OpRegistry::GetInstance();
     auto validated = [&registry](const char* op_name) { return registry.GetOp(op_name)->name_; };
@@ -96,7 +96,13 @@ bool IsSideEffectOp(const StmtPtr& stmt) {
   if (auto assign = std::dynamic_pointer_cast<const AssignStmt>(stmt)) value = assign->value_;
   if (auto eval = std::dynamic_pointer_cast<const EvalStmt>(stmt)) value = eval->expr_;
   if (value && As<Submit>(value)) return true;
-  return side_effect_ops.count(GetStmtOpName(stmt)) > 0;
+  const auto name = GetStmtOpName(stmt);
+  const auto& registry = OpRegistry::GetInstance();
+  if (registry.IsRegistered(name)) {
+    const auto& entry = registry.GetEntry(name);
+    if (entry.GetRegSpec() && entry.WritesAnyArg()) return true;
+  }
+  return side_effect_ops.count(name) > 0;
 }
 
 void CollectAllAssignStmts(const std::vector<StmtPtr>& stmts,

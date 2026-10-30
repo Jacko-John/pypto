@@ -61,6 +61,9 @@ int Lanes(const Kwargs& kw) {
 }
 
 int64_t Constant(const ExprPtr& e, const char* label) {
+  // TODO(reg-vmi-generalize): the P0 allocation/layout ABI still requires
+  // static physical geometry and strides. Relax this when symbolic physical
+  // layouts can be lowered; dynamic offsets and valid_shape pass through.
   auto c = As<ConstInt>(e);
   CHECK_SPAN(c, e->span_) << label << " must be a static integer in P0";
   return c->value_;
@@ -92,6 +95,10 @@ TileTypePtr Memory(const Args& args, int64_t lanes, bool read) {
       << "Register access exceeds capacity bounds";
   if (t->tile_view_) {
     const auto& v = *t->tile_view_;
+    // TODO(reg-vmi-generalize): PTOAS VMI supports block/group/strided loads,
+    // but the P0 reg.load/store ABI emits only the contiguous vload/vstore
+    // form. Remove this restriction when those access modes are represented
+    // in the RegOp attributes and lowered by reg_codegen.cpp.
     CHECK(v.blayout == TileLayout::row_major && v.slayout == TileLayout::none_box &&
           v.compact == CompactMode::null)
         << "Register memory requires a contiguous row-major View";
@@ -115,12 +122,16 @@ TileTypePtr Memory(const Args& args, int64_t lanes, bool read) {
       for (size_t i = 0; i < t->shape_.size(); ++i) {
         auto dim = Constant(t->shape_[i], "shape");
         stride /= dim;
-        auto valid = Constant(v.valid_shape[i], "valid_shape");
+        auto valid_const = As<ConstInt>(v.valid_shape[i]);
+        // Unknown validity/offsets pass through to VMI. Check only facts that
+        // are known statically; callers own runtime bounds and initialization.
+        if (!valid_const) continue;
+        auto valid = valid_const->value_;
         CHECK(valid >= 0 && valid <= dim) << "Invalid valid_shape";
+        if (!offset_const) continue;
         bool wraps = offset / (stride * dim) != last / (stride * dim);
         int64_t max_coordinate = wraps ? dim - 1 : (last / stride) % dim;
-        CHECK((offset_const || valid == dim) && max_coordinate < valid)
-            << "Load interval is not proven initialized by valid_shape";
+        CHECK(max_coordinate < valid) << "Load interval is not proven initialized by valid_shape";
       }
     }
   } else {
@@ -386,6 +397,11 @@ RegMemoryEffect GetRegMemoryEffect(const CallPtr& call) {
   INTERNAL_CHECK_SPAN(validated_reg, call->span_)
       << "Register memory effect validation produced a non-register result";
   int64_t lanes = validated_reg->shape_;
+  // Endpoints are half-open ELEMENT coordinates relative to MemRef.base,
+  // including both byte_offset / element_bytes and the TileView origin.
+  // An absent root or endpoint means unknown, never an empty/zero access.
+  // Optional static initialization analysis converts these coordinates to
+  // bytes; codegen emits the pointer-relative offset independently.
   RegMemoryEffect result{call->args_[0],
                          tile->memref_ ? (*tile->memref_)->base_ : nullptr,
                          load ? ArgEffect::Read : ArgEffect::Write,
@@ -412,6 +428,8 @@ RegMemoryEffect GetRegMemoryEffect(const CallPtr& call) {
       result.end = *result.begin + lanes;
     }
   }
+  // TODO(reg-vmi-generalize): carry symbolic ranges for optional analysis of
+  // dynamic accesses. Unknown endpoints already pass through to PTOAS VMI.
   return result;
 }
 }  // namespace pypto::ir

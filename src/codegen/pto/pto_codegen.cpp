@@ -763,7 +763,19 @@ std::string PTOCodegen::Generate(const ProgramPtr& program, bool emit_tile_addr,
   PrepareGMSlotBufferLayout(program);
 
   const std::string target_arch = backend_->GetHandler()->GetPtoTargetArch();
-  stream_ << "module attributes {pto.target_arch = \"" << target_arch << "\"} {\n";
+  // Select the compiler from structured IR, before serializing it. EmitC cannot
+  // legalize vecscope; PTOAS honors this attribute without a global CLI override.
+  class RegScopeDetector : public ir::IRVisitor {
+   public:
+    bool found = false;
+
+   protected:
+    void VisitStmt_(const ir::RegScopeStmtPtr&) override { found = true; }
+  } detector;
+  detector.VisitProgram(program);
+  stream_ << "module attributes {pto.target_arch = \"" << target_arch << "\"";
+  if (detector.found) stream_ << ", pto.backend = \"vpto\"";
+  stream_ << "} {\n";
 
   for (const auto& [gvar, func] : program->functions_) {
     INTERNAL_CHECK_SPAN(ir::IsInCoreType(func->func_type_), func->span_)
@@ -925,6 +937,7 @@ void PTOCodegen::EmitDeferredCompletionAdapterDeclaration() {
 }
 
 void PTOCodegen::GenerateFunction(const FunctionPtr& func) {
+  parameter_backed_tile_bases_.clear();
   if (UsesBufferIR(func)) {
     GenerateBufferFunction(func);
     return;
@@ -1147,6 +1160,12 @@ void PTOCodegen::GenerateFunction(const FunctionPtr& func) {
       stream_ << GetTypeString(scalar_type->dtype_);
     } else if (ir::IsA<ir::CommCtxType>(param->GetType())) {
       stream_ << "!pto.ptr<i64>";
+    } else if (auto tile_type = As<ir::TileType>(param->GetType());
+               tile_type && tile_type->memory_space_ == ir::MemorySpace::Vec) {
+      CHECK_SPAN(emit_tile_addr_, param->span_)
+          << "Caller-owned Tile parameters require PyPTO memory planning (PTO level3); "
+             "use Tensor parameters with tile.load for PTOAS memory planning";
+      stream_ << "!pto.ptr<" << GetTypeString(tile_type->dtype_) << ", ub>";
     } else {
       stream_ << "!pto.ptr<f32>";
     }
@@ -1303,6 +1322,28 @@ void PTOCodegen::GenerateFunction(const FunctionPtr& func) {
 
   auto saved_stream = std::move(stream_);
   stream_ = std::move(fs_.body_section);
+
+  // Vec Tile arguments denote caller-owned UB storage. Build the materialized
+  // handle PTOAS needs for both tile ops and tile_buf_addr.
+  // These addresses must not enter the allocator's pool of owned allocations.
+  for (const auto& param : func->params_) {
+    if (auto tile_type = As<ir::TileType>(param->GetType());
+        tile_type && tile_type->memory_space_ == ir::MemorySpace::Vec) {
+      const auto ptr = GetVarName(param);
+      const auto addr = NewNamedTemp(param->name_hint_ + "_addr");
+      Emit(addr + " = pto.castptr " + ptr + " : !pto.ptr<" + GetTypeString(tile_type->dtype_) +
+           ", ub> -> i64");
+      const auto fields = ComputeAllocTileFields(tile_type);
+      const auto handle = NewNamedTemp(param->name_hint_ + "_tile");
+      Emit(handle + " = pto.alloc_tile addr = " + addr + " valid_row = " + fields.valid_row_ssa +
+           " valid_col = " + fields.valid_col_ssa + " : " + fields.type_str);
+      BindVarToMlir(param, handle);
+      RegisterTileBufType(handle, fields.type_str, tile_type);
+      RegisterMutableTileName(handle);
+      auto memref = ir::GetDefinedMemRef(tile_type);
+      if (memref) parameter_backed_tile_bases_.insert(memref->base_.get());
+    }
+  }
 
   if (func->body_) {
     VisitStmt(func->body_);
@@ -1896,6 +1937,11 @@ void PTOCodegen::EmitAllocTileForVar(const ir::VarPtr& tile_var,
       << "Tile var " << tile_var->name_hint_ << " not found in fs_.var_to_mlir";
   std::string tile_buf = mlir_it->second;
 
+  // Views derived from caller-owned Vec Tiles retain the parameter backing.
+  // Their view operation materializes a typed SSA view; allocating here would
+  // silently redirect a later reg.load/store to compiler-owned storage.
+  if (IsParameterBackedTile(tile_type)) return;
+
   // In PTOAS mode several vars may share one handle (in-place aliasing); emit
   // the alloc_tile only once per handle so the shared buffer has a single def.
   if (IsTileViewName(tile_buf) || !fs_.emitted_tile_alloc_names.insert(tile_buf).second) {
@@ -2027,6 +2073,14 @@ std::string PTOCodegen::GetTileBufForMemRef(const MemRefPtr& memref) const {
   INTERNAL_CHECK_SPAN(it != fs_.memref_to_mlir.end(), memref->span_)
       << "Internal error: no MLIR mapping for MemRef base '" << memref->base_->name_hint_ << "'";
   return it->second;
+}
+
+bool PTOCodegen::IsParameterBackedTile(const std::shared_ptr<const ir::TileType>& tile_type) const {
+  // Pipe-owned handles can legitimately omit MemRef; they are not Tile
+  // parameters and must continue through their existing handle-based path.
+  if (!tile_type || !tile_type->memref_) return false;
+  auto memref = *tile_type->memref_;
+  return memref && parameter_backed_tile_bases_.count(memref->base_.get()) > 0;
 }
 
 std::string PTOCodegen::AllocNewTileBuf(const std::string& tile_buf_type_string, const std::string& name_hint,
@@ -2349,6 +2403,7 @@ void PTOCodegen::VisitStmt(const ir::StmtPtr& stmt) {
 
 void PTOCodegen::VisitStmt_(const AssignStmtPtr& op) {
   auto call = As<ir::Call>(op->value_);
+  if (TryEmitRegCall(call, op->var_)) return;
   if (fs_.buffer_ir && TryEmitBufferCall(call, op->var_)) return;
   const bool is_set_validshape = ir::IsOp(call, "tile.set_validshape");
   const bool alias_result_to_in_place_input = ShouldAliasResultToInPlaceInput(op);
@@ -2477,6 +2532,11 @@ void PTOCodegen::VisitStmt_(const AssignStmtPtr& op) {
   // Non-fatal: if the RHS has no registered view, fall through to the generic
   // handling rather than throwing eagerly on a view that may never be consumed.
   if (auto rhs_var = AsVarLike(op->value_)) {
+    if (As<TileType>(op->var_->GetType()) && As<TileType>(rhs_var->GetType())) {
+      // Keep this provenance even for emit_tile_addr_ codegen. RegScope may
+      // occur later in the function and needs to canonicalize this alias.
+      fs_.tile_aliases[op->var_.get()] = rhs_var;
+    }
     if (ir::AsTensorTypeLike(op->var_->GetType())) {
       const std::string view = TryGetTensorView(rhs_var);
       if (!view.empty()) {
@@ -2492,7 +2552,8 @@ void PTOCodegen::VisitStmt_(const AssignStmtPtr& op) {
         RegisterCommCtxFor(op->var_, comm_ctx);
         return;
       }
-    } else if (!emit_tile_addr_ && As<TileType>(op->var_->GetType())) {
+    } else if (auto tile_type = As<TileType>(op->var_->GetType());
+               tile_type && (!emit_tile_addr_ || IsParameterBackedTile(tile_type))) {
       // Bare tile SSA alias (`lhs = rhs`) under memory_planner=PTOAS. `lhs` and
       // `rhs` denote the identical tile value, so `lhs` must resolve to `rhs`'s
       // CURRENT SSA binding. This matters when `rhs` is a view (tile.reshape /
@@ -2517,7 +2578,9 @@ void PTOCodegen::VisitStmt_(const AssignStmtPtr& op) {
 
   fs_.current_expr_value = "";
   VisitExpr(op->value_);
-  // Register scalar/index/CommCtx result so subsequent expressions can look up
+  // Bind plain Reg aliases as well as scalar/index/CommCtx results. Same-type
+  // reg.convert is canonicalized to a Var and must retain its source SSA.
+  // Subsequent expressions can look up
   // this variable. N7: CommCtxType is a singleton marker; the bound SSA is the
   // matching explicit ``!pto.ptr<i64>`` ctx ptr from the func.func signature
   // (no MLIR is emitted for ``pld.system.get_comm_ctx`` — its lambda just sets
@@ -2525,7 +2588,8 @@ void PTOCodegen::VisitStmt_(const AssignStmtPtr& op) {
   // downstream ``pld.system.rank(ctx)`` / ``pld.system.nranks(ctx)`` codegen
   // resolve ``ctx`` via the standard ``GetExprAsCode(call->args_[0])`` path.
   const auto& var_type = op->var_->GetType();
-  if ((As<ScalarType>(var_type) || As<CommCtxType>(var_type)) && !fs_.current_expr_value.empty()) {
+  if ((As<ScalarType>(var_type) || As<ir::RegType>(var_type) || As<CommCtxType>(var_type)) &&
+      !fs_.current_expr_value.empty()) {
     BindVarToMlir(op->var_, fs_.current_expr_value);
   }
 }
@@ -2535,6 +2599,7 @@ void PTOCodegen::VisitStmt_(const AssignStmtPtr& op) {
 // ========================================================================
 
 void PTOCodegen::VisitExpr_(const CallPtr& op) {
+  if (TryEmitRegCall(op, nullptr)) return;
   if (fs_.buffer_ir && TryEmitBufferCall(op)) return;
   const std::string& op_name = op->op_->name_;
 

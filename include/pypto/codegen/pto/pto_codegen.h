@@ -763,6 +763,10 @@ class PTOCodegen : public CodegenBase {
    * `pto.reserve_buffer` is emitted as `auto = true` with no `base`.
    */
   [[nodiscard]] bool EmitTileAddr() const { return emit_tile_addr_; }
+  /// Test MemRef-base ownership, including views derived from Tile parameters.
+  /// Caller-backed storage must keep its incoming handle/address instead of
+  /// receiving a new local allocation or an unrelated view handle.
+  [[nodiscard]] bool IsParameterBackedTile(const std::shared_ptr<const ir::TileType>& tile_type) const;
 
   /**
    * @brief Check if the current function is an AIC (Cube) function
@@ -794,11 +798,24 @@ class PTOCodegen : public CodegenBase {
 
   // Override visitor methods for code generation - Statements
   void VisitStmt_(const ir::AssignStmtPtr& op) override;
+  void VisitStmt_(const ir::RegScopeStmtPtr& op) override;
   void VisitStmt_(const ir::ForStmtPtr& op) override;
   void VisitStmt_(const ir::IfStmtPtr& op) override;
   void VisitStmt_(const ir::WhileStmtPtr& op) override;
   void VisitStmt_(const ir::YieldStmtPtr& op) override;
   void VisitStmt_(const ir::EvalStmtPtr& op) override;
+
+  /// Emit a registered RegOp as typed VMI SSA; return false for ordinary calls
+  /// so assignment emission can fall back to the normal Tile/scalar path.
+  /// RegOps require a named result inside their owning RegScope.
+  bool TryEmitRegCall(const ir::CallPtr& call, const ir::VarPtr& result);
+  /// Validate backend support and spell a vector or predicate-mask VMI type.
+  std::string GetRegTypeString(const ir::RegTypePtr& type) const;
+  /// Accessed Tile variable -> UB pointer SSA hoisted before pto.vecscope.
+  /// Store-result aliases may share one pointer; cleared after each RegScope.
+  std::map<const ir::Var*, std::string> reg_addresses_;
+  /// Lexical emission guard for RegOps and nested scopes, not memory ownership.
+  bool inside_reg_scope_ = false;
 
   // Override visitor methods for code generation - Expressions
   void VisitExpr_(const ir::CallPtr& op) override;
@@ -1076,6 +1093,10 @@ class PTOCodegen : public CodegenBase {
         view_ssa_to_base_ptr;  ///< tensor_view SSA → base ptr SSA (for rebinding IfStmt phi return_vars)
     std::map<const ir::Var*, std::string> memref_to_mlir;    ///< keyed by base_ Ptr
     std::map<const ir::Var*, const ir::Var*> var_to_memref;  ///< maps tile var → base_ Ptr
+    /// Plain Tile assignments recorded while emitting the surrounding function.
+    /// RegScope pre-scanning uses this provenance when an external alias is
+    /// defined before the scope and therefore is outside its statement tree.
+    std::map<const ir::Var*, ir::VarPtr> tile_aliases;
     std::map<const ir::Var*, std::shared_ptr<const ir::TileType>>
         memref_to_tile_type;  ///< keyed by base_ Ptr
 
@@ -1220,6 +1241,7 @@ class PTOCodegen : public CodegenBase {
       view_ssa_to_base_ptr.clear();
       memref_to_mlir.clear();
       var_to_memref.clear();
+      tile_aliases.clear();
       memref_to_tile_type.clear();
 
       emitted_numeric_constants.clear();
@@ -1357,7 +1379,13 @@ class PTOCodegen : public CodegenBase {
   /// Helper for comparison expression visitors
   void VisitCmpExpr(const ir::BinaryExprPtr& op, const std::string& predicate);
 
-  /// Get MLIR type string for a scalar iter_arg/return_var (e.g., "index", "i1", "f32")
+  /// Spell scalar/vector/mask value types carried by SCF iter_args and results.
+  /// Tile handles follow the separate mutable-storage control-flow path.
+  std::string GetValueCarryTypeString(const ir::TypePtr& type) const;
+  /// MemRef bases owned by Tile parameters, including their derived views.
+  /// Rebuilt per function: preserve caller storage instead of allocating locally.
+  /// Unlike reg_addresses_, this tracks ownership, not emitted pointer SSA names.
+  std::set<const ir::Var*> parameter_backed_tile_bases_;
   std::string GetScalarIterArgTypeString(const std::shared_ptr<const ir::ScalarType>& scalar_type) const;
 };
 
