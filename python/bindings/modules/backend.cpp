@@ -213,6 +213,10 @@ void BindBackend(nb::module_& m) {
       .def("get_type_name", &Backend::GetTypeName, "Get backend type name")
       .def("get_registered_op_names", &Backend::GetRegisteredOpNames,
            "Get a sorted snapshot of this backend's registered operator names")
+      .def("find_isa_macro_resources", &Backend::FindIsaMacroResources, nb::arg("name"),
+           "Return symbolic signal claims for a qualified ISA macro, or None if unregistered")
+      .def("get_isa_macro_names", &Backend::GetIsaMacroNames,
+           "Return sorted qualified ISA macro names with registered signal occupancy")
       .def(
           "plan_op_scratch",
           [](const Backend& target, const std::string& op_name, std::optional<DataType> source_dtype,

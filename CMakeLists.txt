@@ -413,6 +413,11 @@ set(PYPTO_SOURCES
     src/backend/common/backend_config.cpp
     src/backend/common/backend_handler.cpp
     src/backend/common/backend_registry.cpp
+    src/backend/common/isa_macro_resources.cpp
+    src/backend/common/isa_macro_resources_validation.cpp
+    src/backend/common/isa_macro_resources_npu.cpp
+    src/backend/common/isa_macro_resources_comm.cpp
+    src/backend/common/isa_macro_resources_protocol.cpp
     src/backend/common/buffer_elementwise_recipes.cpp
     src/backend/common/buffer_view_semantics.cpp
     src/backend/common/pto_ops_common.cpp
